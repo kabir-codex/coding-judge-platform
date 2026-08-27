@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import { api } from "../api.js";
@@ -16,38 +16,66 @@ export default function ProblemDetail() {
   const [problem, setProblem] = useState(null);
   const [language, setLanguage] = useState("python");
   const [code, setCode] = useState(STARTER.python);
+  const [codeByLanguage, setCodeByLanguage] = useState({ python: STARTER.python, cpp: STARTER.cpp, java: STARTER.java });
   const [submission, setSubmission] = useState(null);
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const pollRef = useRef(null);
+
+  // Cleanup function for poll interval
+  const clearPoll = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     api.getProblem(slug).then(setProblem).catch((e) => setError(e.message));
-    return () => clearInterval(pollRef.current);
-  }, [slug]);
+    return () => clearPoll();
+  }, [slug, clearPoll]);
+
+  // Persist code per language
+  useEffect(() => {
+    if (codeByLanguage[language]) {
+      setCode(codeByLanguage[language]);
+    }
+  }, [language, codeByLanguage]);
 
   function changeLanguage(lang) {
+    // Save current code before switching
+    setCodeByLanguage(prev => ({ ...prev, [language]: code }));
     setLanguage(lang);
-    setCode(STARTER[lang]);
+    setCode(codeByLanguage[lang] || STARTER[lang]);
   }
 
   async function handleSubmit() {
     setError("");
+    clearPoll();
     if (!localStorage.getItem("token")) {
       setError("Log in to submit code.");
       return;
     }
+    setIsSubmitting(true);
     try {
       const sub = await api.submit({ problem_id: problem.id, language, source_code: code });
       setSubmission(sub);
       pollRef.current = setInterval(async () => {
-        const updated = await api.getSubmission(sub.id);
-        setSubmission(updated);
-        if (!["QUEUED", "RUNNING"].includes(updated.status)) {
-          clearInterval(pollRef.current);
+        try {
+          const updated = await api.getSubmission(sub.id);
+          setSubmission(updated);
+          if (!["QUEUED", "RUNNING"].includes(updated.status)) {
+            clearPoll();
+          }
+        } catch (e) {
+          setError(e.message);
+          clearPoll();
         }
       }, 1200);
     } catch (e) {
       setError(e.message);
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -79,7 +107,9 @@ export default function ProblemDetail() {
             <option value="cpp">C++17</option>
             <option value="java">Java 21</option>
           </select>
-          <button onClick={handleSubmit}>Submit</button>
+          <button onClick={handleSubmit} disabled={isSubmitting}>
+            {isSubmitting ? "Submitting…" : "Submit"}
+          </button>
         </div>
 
         <Editor
@@ -97,6 +127,7 @@ export default function ProblemDetail() {
           <div className={`verdict verdict-${submission.status}`}>
             <p><strong>{submission.status}</strong> — {submission.passed_tests}/{submission.total_tests} tests passed
               {submission.runtime_ms ? ` · ${submission.runtime_ms}ms` : ""}
+              {submission.memory_kb ? ` · ${submission.memory_kb}KB` : ""}
             </p>
             {submission.stderr && <pre className="stderr">{submission.stderr}</pre>}
           </div>

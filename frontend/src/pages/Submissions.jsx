@@ -4,10 +4,17 @@ import { api } from "../api.js";
 export default function Submissions() {
   const [subs, setSubs] = useState([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.mySubmissions().then(setSubs).catch((e) => setError(e.message));
+    setLoading(true);
+    api.mySubmissions()
+      .then(setSubs)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   }, []);
+
+  if (loading) return <p>Loading submissions…</p>;
 
   return (
     <div>

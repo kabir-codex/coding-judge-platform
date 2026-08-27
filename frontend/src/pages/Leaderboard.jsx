@@ -4,10 +4,17 @@ import { api } from "../api.js";
 export default function Leaderboard() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.leaderboard().then(setRows).catch((e) => setError(e.message));
+    setLoading(true);
+    api.leaderboard()
+      .then(setRows)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   }, []);
+
+  if (loading) return <p>Loading leaderboard…</p>;
 
   return (
     <div>

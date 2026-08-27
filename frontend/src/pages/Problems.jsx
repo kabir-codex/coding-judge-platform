@@ -7,10 +7,17 @@ const DIFFICULTY_CLASS = { EASY: "diff-easy", MEDIUM: "diff-medium", HARD: "diff
 export default function Problems() {
   const [problems, setProblems] = useState([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.listProblems().then(setProblems).catch((e) => setError(e.message));
+    setLoading(true);
+    api.listProblems()
+      .then(setProblems)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   }, []);
+
+  if (loading) return <p>Loading problems…</p>;
 
   return (
     <div>
