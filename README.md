@@ -84,6 +84,30 @@ exposed inside the sandbox, so submitted code has no path to it.
 - First `ACCEPTED` submission per user+problem bumps `User.rating` —
   simple placeholder for a real ELO/Codeforces-style rating system.
 
+## Recent fixes & improvements (2026-08-27)
+
+- **Config-driven sandbox images**: Docker images now configurable via `JUDGE_DOCKER_IMAGES` in settings (no hardcoded values)
+- **Actual memory tracking**: Reports peak memory usage per test case via `docker inspect` (was always 0)
+- **Docker availability check**: Validates Docker daemon access on executor startup; fails fast with clear error
+- **Secure temp directories**: Replaced insecure `chmod 0o777` with dedicated sandbox subdirectory
+- **Worker retry logic**: Transient failures (network, Docker) auto-retry up to 3× with backoff
+- **Rating bump race fix**: Atomic check-and-update prevents double-credit on concurrent AC submissions
+- **Structured logging**: Worker and API log at INFO/DEBUG levels with consistent format
+- **Configurable job timeout**: `JOB_TIMEOUT` setting (default 120s) controls RQ job TTL
+- **Pagination**: `/api/problems` supports `page` and `page_size` query params
+- **JWT includes user_id**: Token payload has `sub` (username) + `user_id` for faster lookups
+- **Required JWT_SECRET**: No default — must be set via env var in production
+- **Composite DB index**: `Submission(user_id, problem_id)` speeds up "my submissions" and rating queries
+- **Frontend poll cleanup**: Interval properly cleared on error/navigation/unmount
+- **Loading states**: All list pages show "Loading…" skeletons while fetching
+- **Per-language code persistence**: Switching languages preserves your code per-language
+- **Request timeout**: 30s fetch timeout prevents hanging UI on slow/stalled API
+- **Health checks**: All Docker Compose services have `healthcheck` + `depends_on: condition: service_healthy`
+- **Non-root backend**: API/worker containers run as `appuser` (UID 1000)
+- **Rate limiting**: 10 submissions/minute per user (Redis-backed sliding window)
+- **Difficulty validation**: Problem creation validates EASY/MEDIUM/HARD enum
+- **Docker socket permission check**: Warns if `/var/run/docker.sock` isn't accessible
+
 ## Running locally
 
 ```bash
@@ -119,6 +143,25 @@ Note: without the sandbox images built and Docker available, submissions
 will queue but the worker's `docker run` calls will fail — build the
 sandbox images first, or point `REDIS_URL`/run a worker separately.
 
+## Environment variables (backend)
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `DATABASE_URL` | `sqlite:///./judge.db` | No | SQLAlchemy connection string |
+| `JWT_SECRET` | — | **Yes** | HS256 signing key (no default!) |
+| `JWT_ALGORITHM` | `HS256` | No | JWT algorithm |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | No | Token lifetime |
+| `REDIS_URL` | `redis://localhost:6379/0` | No | Redis connection |
+| `SUBMISSION_QUEUE` | `submissions` | No | RQ queue name |
+| `JOB_TIMEOUT` | `120` | No | RQ job TTL (seconds) |
+| `JUDGE_TIME_LIMIT_SEC` | `5` | No | Per-test-case wall clock limit |
+| `JUDGE_MEMORY_LIMIT_MB` | `256` | No | Per-test-case memory limit |
+| `JUDGE_CPU_LIMIT` | `1.0` | No | Docker `--cpus` value |
+| `JUDGE_PIDS_LIMIT` | `64` | No | Docker `--pids-limit` |
+| `JUDGE_NETWORK_DISABLED` | `true` | No | `--network none` if true |
+| `JUDGE_DOCKER_IMAGES` | see config | No | Per-language sandbox images |
+| `ENV` | `development` | No | `production` enables INFO logging |
+
 ## What's intentionally simplified (and how you'd extend it)
 
 - **Rating system** is a flat point bump on first AC. A real implementation
@@ -131,4 +174,3 @@ sandbox images first, or point `REDIS_URL`/run a worker separately.
 - **Result detail** is stored but the frontend only shows the final
   verdict — showing per-test-case pass/fail is a small UI addition
   reading `submission.result_detail`.
-
