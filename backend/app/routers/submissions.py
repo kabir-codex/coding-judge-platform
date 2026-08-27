@@ -1,6 +1,7 @@
 from typing import List
+import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from redis import Redis
 from rq import Queue
@@ -16,13 +17,35 @@ router = APIRouter(prefix="/api/submissions", tags=["submissions"])
 _redis_conn = Redis.from_url(settings.REDIS_URL)
 _queue = Queue(settings.SUBMISSION_QUEUE, connection=_redis_conn)
 
+# Rate limiting: max 10 submissions per minute per user
+SUBMISSION_RATE_LIMIT = 10
+SUBMISSION_RATE_WINDOW = 60  # seconds
+
+
+def check_rate_limit(user_id: int) -> None:
+    """Check if user has exceeded submission rate limit."""
+    key = f"rate_limit:submissions:{user_id}"
+    current = _redis_conn.incr(key)
+    if current == 1:
+        _redis_conn.expire(key, SUBMISSION_RATE_WINDOW)
+    if current > SUBMISSION_RATE_LIMIT:
+        ttl = _redis_conn.ttl(key)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Try again in {ttl} seconds."
+        )
+
 
 @router.post("", response_model=schemas.SubmissionOut, status_code=201)
 def submit_code(
     payload: schemas.SubmissionCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
+    # Rate limiting
+    check_rate_limit(current_user.id)
+
     if payload.language not in LANGUAGE_CONFIG:
         raise HTTPException(400, f"Unsupported language '{payload.language}'")
 

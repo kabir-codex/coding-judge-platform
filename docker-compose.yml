@@ -11,11 +11,21 @@ services:
       - pg_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judge -d judge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: ./backend
@@ -26,14 +36,18 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - postgres
-      - redis
-    # Mount the host Docker socket so the API/worker can launch sandbox
-    # containers as SIBLINGS of themselves (Docker-outside-of-Docker).
-    # This is the standard pattern for judge systems; the socket is only
-    # reachable by this trusted service, never by submitted user code.
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # One or more judge workers consuming the "submissions" Redis queue.
   # Scale with: docker compose up --scale worker=4
@@ -44,8 +58,10 @@ services:
       DATABASE_URL: postgresql://judge:judge_dev_password@postgres:5432/judge
       REDIS_URL: redis://redis:6379/0
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
@@ -58,7 +74,14 @@ services:
     environment:
       VITE_API_BASE_URL: http://localhost:8000
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 volumes:
   pg_data:
