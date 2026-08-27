@@ -24,6 +24,7 @@ keep the dependency footprint small; swap in docker-py if preferred.
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -35,6 +36,8 @@ from typing import Optional
 
 from app.config import settings
 from app.judge.languages import get_language_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,21 +63,33 @@ class JudgeVerdict:
 
 class SandboxExecutor:
     def __init__(self):
-        self.docker_bin = shutil.which("docker") or "docker"
+        self.docker_bin = shutil.which("docker")
+        if not self.docker_bin:
+            raise RuntimeError("Docker binary not found in PATH. Please install Docker.")
+        self._verify_docker_access()
+
+    def _verify_docker_access(self) -> None:
+        try:
+            subprocess.run(
+                [self.docker_bin, "version", "--format", "{{.Server.Version}}"],
+                capture_output=True, check=True, timeout=5
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Docker daemon not accessible: %s", e)
+            raise RuntimeError("Cannot access Docker daemon. Ensure Docker is running and user has permissions.")
 
     # ---------------------------------------------------------------
     def _build_docker_cmd(self, work_dir: str, image: str, cmd: list[str],
-                           time_limit_sec: float, memory_limit_mb: int) -> list[str]:
+                           time_limit_sec: float, memory_limit_mb: int, cidfile: str | None = None) -> list[str]:
         mem = f"{memory_limit_mb}m"
-        return [
+        cmd_parts = [
             self.docker_bin, "run",
-            "--rm",
             "--name", f"judge-{uuid.uuid4().hex[:12]}",
             "--network", "none" if settings.JUDGE_NETWORK_DISABLED else "bridge",
             "--read-only",
             "--tmpfs", "/tmp:rw,size=64m,mode=1777",
             "--memory", mem,
-            "--memory-swap", mem,           # disallow swap -> hard cap
+            "--memory-swap", mem,
             "--cpus", settings.JUDGE_CPU_LIMIT,
             "--pids-limit", str(settings.JUDGE_PIDS_LIMIT),
             "--cap-drop", "ALL",
@@ -88,39 +103,82 @@ class SandboxExecutor:
             "timeout", "--signal=KILL", str(int(time_limit_sec) + 1),
             *cmd,
         ]
+        if cidfile:
+            cmd_parts.insert(2, "--cidfile")
+            cmd_parts.insert(3, cidfile)
+        else:
+            cmd_parts.insert(2, "--rm")
+        return cmd_parts
 
     # ---------------------------------------------------------------
     def _run_in_container(self, work_dir: str, image: str, cmd: list[str],
                            stdin_data: str, time_limit_sec: float,
                            memory_limit_mb: int) -> RunResult:
-        docker_cmd = self._build_docker_cmd(work_dir, image, cmd, time_limit_sec, memory_limit_mb)
-        start = time.monotonic()
+        import tempfile as tmp
+        with tmp.NamedTemporaryFile(mode="w+", delete=False, prefix="cid-") as cidfile:
+            cidfile_path = cidfile.name
+
         try:
-            proc = subprocess.run(
-                docker_cmd,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
-                timeout=time_limit_sec + 5,  # outer backstop beyond in-container `timeout`
+            docker_cmd = self._build_docker_cmd(work_dir, image, cmd, time_limit_sec, memory_limit_mb, cidfile=cidfile_path)
+            start = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    docker_cmd,
+                    input=stdin_data,
+                    capture_output=True,
+                    text=True,
+                    timeout=time_limit_sec + 5,
+                )
+            except subprocess.TimeoutExpired:
+                elapsed = int((time.monotonic() - start) * 1000)
+                return RunResult(status="TIME_LIMIT_EXCEEDED", runtime_ms=elapsed)
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            container_id = ""
+            try:
+                with open(cidfile_path, "r") as f:
+                    container_id = f.read().strip()
+            except OSError:
+                pass
+
+            memory_kb = 0
+            if container_id:
+                memory_kb = self._get_container_memory_usage(container_id)
+                try:
+                    subprocess.run([self.docker_bin, "rm", "-f", container_id], capture_output=True, timeout=5)
+                except subprocess.SubprocessError:
+                    pass
+
+            if proc.returncode == 137:
+                if elapsed_ms >= time_limit_sec * 1000:
+                    return RunResult(status="TIME_LIMIT_EXCEEDED", runtime_ms=elapsed_ms, stderr=proc.stderr, memory_kb=memory_kb)
+                return RunResult(status="MEMORY_LIMIT_EXCEEDED", runtime_ms=elapsed_ms, stderr=proc.stderr, memory_kb=memory_kb)
+
+            if proc.returncode != 0:
+                return RunResult(
+                    status="RUNTIME_ERROR", stdout=proc.stdout, stderr=proc.stderr,
+                    runtime_ms=elapsed_ms, exit_code=proc.returncode, memory_kb=memory_kb,
+                )
+
+            return RunResult(status="OK", stdout=proc.stdout, stderr=proc.stderr, runtime_ms=elapsed_ms, memory_kb=memory_kb)
+        finally:
+            try:
+                os.unlink(cidfile_path)
+            except OSError:
+                pass
+
+    def _get_container_memory_usage(self, container_id: str) -> int:
+        try:
+            result = subprocess.run(
+                [self.docker_bin, "inspect", "--format", "{{.MemoryStats.MaxUsage}}", container_id],
+                capture_output=True, text=True, timeout=5
             )
-        except subprocess.TimeoutExpired:
-            elapsed = int((time.monotonic() - start) * 1000)
-            return RunResult(status="TIME_LIMIT_EXCEEDED", runtime_ms=elapsed)
-
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-
-        if proc.returncode == 137:  # SIGKILL - OOM or timeout kill from `timeout`/cgroup
-            if elapsed_ms >= time_limit_sec * 1000:
-                return RunResult(status="TIME_LIMIT_EXCEEDED", runtime_ms=elapsed_ms, stderr=proc.stderr)
-            return RunResult(status="MEMORY_LIMIT_EXCEEDED", runtime_ms=elapsed_ms, stderr=proc.stderr)
-
-        if proc.returncode != 0:
-            return RunResult(
-                status="RUNTIME_ERROR", stdout=proc.stdout, stderr=proc.stderr,
-                runtime_ms=elapsed_ms, exit_code=proc.returncode,
-            )
-
-        return RunResult(status="OK", stdout=proc.stdout, stderr=proc.stderr, runtime_ms=elapsed_ms)
+            if result.returncode == 0 and result.stdout.strip().isdigit():
+                return int(result.stdout.strip()) // 1024
+        except (subprocess.SubprocessError, ValueError):
+            pass
+        return 0
 
     # ---------------------------------------------------------------
     def compile(self, work_dir: str, language: str, source_code: str) -> Optional[RunResult]:
@@ -159,45 +217,49 @@ class SandboxExecutor:
         """
         detail = []
         with tempfile.TemporaryDirectory(prefix="judge-") as work_dir:
-            os.chmod(work_dir, 0o777)  # sandbox user (uid 1000) needs write access
+            # Create a sandbox subdirectory with write permissions for the container user (uid 1000)
+            sandbox_dir = os.path.join(work_dir, "sandbox")
+            os.makedirs(sandbox_dir, mode=0o777, exist_ok=True)
 
-            compile_result = self.compile(work_dir, language, source_code)
+            compile_result = self.compile(sandbox_dir, language, source_code)
             if compile_result and compile_result.status != "OK":
                 return JudgeVerdict(
                     status="COMPILE_ERROR", passed_tests=0, total_tests=len(test_cases),
-                    runtime_ms=0, memory_kb=0, stderr=compile_result.stderr, detail=[],
+                    runtime_ms=0, memory_kb=compile_result.memory_kb, stderr=compile_result.stderr, detail=[],
                 )
 
             passed = 0
             max_runtime = 0
+            max_memory = 0
             for idx, tc in enumerate(test_cases, start=1):
                 result = self.run_test_case(
-                    work_dir, language, tc["input"], time_limit_sec, memory_limit_mb
+                    sandbox_dir, language, tc["input"], time_limit_sec, memory_limit_mb
                 )
                 max_runtime = max(max_runtime, result.runtime_ms)
+                max_memory = max(max_memory, result.memory_kb)
 
                 if result.status != "OK":
-                    detail.append({"case": idx, "status": result.status, "time_ms": result.runtime_ms})
+                    detail.append({"case": idx, "status": result.status, "time_ms": result.runtime_ms, "memory_kb": result.memory_kb})
                     return JudgeVerdict(
                         status=result.status, passed_tests=passed, total_tests=len(test_cases),
-                        runtime_ms=max_runtime, memory_kb=0, stderr=result.stderr, detail=detail,
+                        runtime_ms=max_runtime, memory_kb=max_memory, stderr=result.stderr, detail=detail,
                     )
 
                 actual = result.stdout.strip()
                 expected = tc["expected_output"].strip()
                 if actual == expected:
                     passed += 1
-                    detail.append({"case": idx, "status": "ACCEPTED", "time_ms": result.runtime_ms})
+                    detail.append({"case": idx, "status": "ACCEPTED", "time_ms": result.runtime_ms, "memory_kb": result.memory_kb})
                 else:
-                    detail.append({"case": idx, "status": "WRONG_ANSWER", "time_ms": result.runtime_ms})
+                    detail.append({"case": idx, "status": "WRONG_ANSWER", "time_ms": result.runtime_ms, "memory_kb": result.memory_kb})
                     return JudgeVerdict(
                         status="WRONG_ANSWER", passed_tests=passed, total_tests=len(test_cases),
-                        runtime_ms=max_runtime, memory_kb=0, stderr="", detail=detail,
+                        runtime_ms=max_runtime, memory_kb=max_memory, stderr="", detail=detail,
                     )
 
             return JudgeVerdict(
                 status="ACCEPTED", passed_tests=passed, total_tests=len(test_cases),
-                runtime_ms=max_runtime, memory_kb=0, stderr="", detail=detail,
+                runtime_ms=max_runtime, memory_kb=max_memory, stderr="", detail=detail,
             )
 
 
