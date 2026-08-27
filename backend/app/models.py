@@ -2,7 +2,7 @@ import enum
 import datetime as dt
 
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, Enum, Float, Boolean, JSON
+    Column, Integer, String, Text, DateTime, ForeignKey, Enum, Float, Boolean, JSON, Index
 )
 from sqlalchemy.orm import relationship
 
@@ -78,6 +78,9 @@ class TestCase(Base):
 
 class Submission(Base):
     __tablename__ = "submissions"
+    __table_args__ = (
+        Index("ix_submissions_user_problem", "user_id", "problem_id"),
+    )
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)

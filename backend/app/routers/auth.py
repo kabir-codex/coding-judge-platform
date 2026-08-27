@@ -30,7 +30,7 @@ def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == payload.username).first()
     if not user or not auth.verify_password(payload.password, user.hashed_password):
         raise HTTPException(401, "Invalid username or password")
-    token = auth.create_access_token(subject=user.username)
+    token = auth.create_access_token(user_id=user.id, username=user.username)
     return {"access_token": token}
 
 
