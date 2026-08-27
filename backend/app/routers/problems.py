@@ -45,9 +45,15 @@ def create_problem(
     if db.query(models.Problem).filter(models.Problem.slug == payload.slug).first():
         raise HTTPException(400, "Slug already exists")
 
+    # Validate difficulty enum
+    try:
+        difficulty = models.Difficulty(payload.difficulty.upper())
+    except ValueError:
+        raise HTTPException(400, f"Invalid difficulty: {payload.difficulty}. Must be one of: EASY, MEDIUM, HARD")
+
     problem = models.Problem(
         slug=payload.slug, title=payload.title, statement=payload.statement,
-        difficulty=models.Difficulty(payload.difficulty),
+        difficulty=difficulty,
         time_limit_sec=payload.time_limit_sec, memory_limit_mb=payload.memory_limit_mb,
         points=payload.points,
     )

@@ -78,6 +78,13 @@ class SandboxExecutor:
             logger.error("Docker daemon not accessible: %s", e)
             raise RuntimeError("Cannot access Docker daemon. Ensure Docker is running and user has permissions.")
 
+        # Check docker socket permissions (for Docker-outside-of-Docker)
+        docker_sock = "/var/run/docker.sock"
+        if os.path.exists(docker_sock):
+            if not os.access(docker_sock, os.R_OK | os.W_OK):
+                logger.warning("Docker socket %s not readable/writable by current user", docker_sock)
+                # Don't raise - the subprocess call might still work via group permissions
+
     # ---------------------------------------------------------------
     def _build_docker_cmd(self, work_dir: str, image: str, cmd: list[str],
                            time_limit_sec: float, memory_limit_mb: int, cidfile: str | None = None) -> list[str]:
