@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -8,10 +8,18 @@ from app import models, schemas, auth
 
 router = APIRouter(prefix="/api/problems", tags=["problems"])
 
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
 
 @router.get("", response_model=List[schemas.ProblemSummary])
-def list_problems(db: Session = Depends(get_db)):
-    return db.query(models.Problem).order_by(models.Problem.id).all()
+def list_problems(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
+    db: Session = Depends(get_db),
+):
+    offset = (page - 1) * page_size
+    return db.query(models.Problem).order_by(models.Problem.id).offset(offset).limit(page_size).all()
 
 
 @router.get("/{slug}", response_model=schemas.ProblemDetail)

@@ -46,7 +46,7 @@ def submit_code(
     db.refresh(submission)
 
     # Hand off to the worker pool via Redis; this call returns immediately.
-    _queue.enqueue(judge_submission_job, submission.id, job_timeout=60)
+    _queue.enqueue(judge_submission_job, submission.id, job_timeout=settings.JOB_TIMEOUT)
 
     return submission
 

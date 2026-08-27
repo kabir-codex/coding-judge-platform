@@ -16,13 +16,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./judge.db"
 
     # --- Auth ---
-    JWT_SECRET: str = "CHANGE_ME_IN_PRODUCTION_USE_ENV_VAR"
+    # SECURITY: Must be set via environment variable in production!
+    # No default provided - will raise validation error if not set.
+    JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
 
     # --- Redis / Queue ---
     REDIS_URL: str = "redis://localhost:6379/0"
     SUBMISSION_QUEUE: str = "submissions"
+    # Job timeout for RQ worker (seconds)
+    JOB_TIMEOUT: int = 120
 
     # --- Judge sandbox limits ---
     JUDGE_TIME_LIMIT_SEC: int = 5
